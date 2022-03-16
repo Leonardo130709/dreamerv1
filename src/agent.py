@@ -20,8 +20,10 @@ class Agent(nn.Module):
         self.encoder = encoder
         self.decoder = decoder or nn.Linear(self.c.deter_dim + self.c.stoch_dim, obs_dim)
         self.callback = callback
+        self._step = 0
         self._build()
 
+    @torch.no_grad()
     def act(self, obs, prev_state, training):
         if prev_state is None:
             latent = self.wm.init_state(obs.size(0))
@@ -33,10 +35,11 @@ class Agent(nn.Module):
         latent, _ = self.wm.obs_step(obs, action, latent)
         feat = self.wm.get_feat(latent)
         dist = self.actor(feat)
-        action = dist.rsample()
-
         if training:
+            action = dist.sample()
             action = action + self.c.expl_scale*torch.randn_like(action)
+        else:
+            action = dist.sample([100]).mean()
 
         action = torch.clamp(action, -1, 1)
         return action, (latent, action)
@@ -60,8 +63,15 @@ class Agent(nn.Module):
               (1. - self.c.alpha)*td.kl_divergence(post_dist, fixed_prior_dist)
         div = div.mean()
         div = torch.maximum(div, torch.full_like(div, self.c.free_nats))
-        model_loss = (obs_pred - next_observations).pow(2).mean() + (reward_pred - rewards).pow(2).mean() + \
-                     self.c.kl_scale*div
+
+        obs_loss = (obs_pred - next_observations).pow(2).mean()
+        reward_loss = (reward_pred - rewards).pow(2).mean()
+        self.callback.add_scalar('train/obs_loss', obs_loss, self._step)
+        self.callback.add_scalar('train/reward_loss', reward_loss, self._step)
+        self.callback.add_scalar('train/kl_div', div, self._step)
+        model_loss = obs_loss + reward_loss + self.c.kl_scale*div
+        self.callback.add_scalar('train/model_loss', model_loss, self._step)
+        self.callback.add_scalar('train/mean_rewards', rewards.mean(), self._step)
 
         self._wm_optim.zero_grad()
         model_loss.backward()
@@ -76,15 +86,19 @@ class Agent(nn.Module):
         discount = self.masked_discount(target_values, 0)
         actor_loss = - (discount*target_values).mean()
         critic_loss = (discount*(values[:-1] - target_values.detach()).pow(2)).mean()
+        self.callback.add_scalar('train/actor_loss', actor_loss, self._step)
+        self.callback.add_scalar('train/critic_loss', critic_loss, self._step)
+        self.callback.add_scalar('train/mean_value', values.mean(), self._step)
 
         self._actor_optim.zero_grad()
         self._critic_optim.zero_grad()
-        actor_loss.backward(retain_graph=True) # careful values reused twice
+        actor_loss.backward(retain_graph=True)  # careful values reused twice
         critic_loss.backward()
 
         self._wm_optim.step()
         self._actor_optim.step()
         self._critic_optim.step()
+        self._step += 1
         return model_loss, actor_loss, critic_loss
 
     def imagine_ahead(self, posts):
@@ -101,6 +115,13 @@ class Agent(nn.Module):
             states.append(state)
 
         states = torch.stack(states)
+
+        with torch.no_grad():
+            feat = self.wm.get_feat(states)
+            dist = self.actor(feat)
+            ent = dist.entropy().mean()
+            self.callback.add_scalar('train/ent', ent, self._step)
+
         return self.wm.get_feat(states)
 
     def masked_discount(self, x, mask_size):
@@ -116,7 +137,7 @@ class Agent(nn.Module):
         self.actor = models.NormalActor(feat, self.act_dim, self.c.actor_layers)
         self.critic = utils.build_mlp([feat] + self.c.critic_layers + [1])
         self.reward_model = utils.build_mlp([feat] + self.c.critic_layers + [1])
-        self.wm = models.RSSM(self.obs_dim, self.act_dim, self.c.deter_dim, self.c.stoch_dim)
+        self.wm = models.RSSM(self.obs_dim, self.act_dim, self.c.deter_dim, self.c.stoch_dim, self.c.wm_layers)
         self._target_actor, self._target_critic = map(lambda m: deepcopy(m).requires_grad_(False),
                                                       (self.actor, self.critic))
         self._model_params = nn.ParameterList(

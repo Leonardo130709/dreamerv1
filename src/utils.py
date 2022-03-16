@@ -15,9 +15,10 @@ def build_mlp(sizes, act=nn.ELU):
 
 
 def layer_norm_emb(in_features, out_features):
+    raise NotImplementedError
     return nn.Sequential(
         nn.Linear(in_features, out_features),
-        nn.LayerNorm(),
+        nn.LayerNorm(), #specify dimension
         nn.Tanh())
 
 
@@ -48,6 +49,7 @@ def gve2(rewards, values, discount, disclam):
 
     target_values = torch.stack(target_values)
     return target_values.flip(-1)
+
 
 def simulate(env, policy, training):
     obs = env.reset()

@@ -5,7 +5,7 @@ td = torch.distributions
 
 
 class DenseNormal(nn.Module):
-    def __init__(self, in_features, out_features, layers=[32, 32], min_std=1e-3):
+    def __init__(self, in_features, out_features, layers=[32, 32], min_std=1e-2):
         super().__init__()
         self.fc = build_mlp([in_features]+layers+[2*out_features])
         self.min_std = min_std
@@ -35,11 +35,12 @@ class RSSM(nn.Module):
                  act_dim,
                  deter_dim,
                  stoch_dim,
+                 layers,
                  ):
         super().__init__()
         self.obs_dim, self.act_dim, self.deter_dim, self.stoch_dim = obs_dim, act_dim, deter_dim, stoch_dim
-        self.prior = DenseNormal(self.deter_dim, self.stoch_dim)
-        self.infer = DenseNormal(self.obs_dim + self.deter_dim, self.stoch_dim)
+        self.prior = DenseNormal(self.deter_dim, self.stoch_dim, layers)
+        self.infer = DenseNormal(self.obs_dim + self.deter_dim, self.stoch_dim, layers)
         self.cell = nn.GRUCell(self.act_dim + self.stoch_dim, self.deter_dim)
 
     def img_step(self, prev_action, prev_state):

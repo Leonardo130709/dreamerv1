@@ -3,23 +3,25 @@ from .agent import Agent
 from . import utils
 import gym
 import torch
+from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class Config:
     #task
     discount = .99
     disclam = .95
-    horizon = 5
-    free_nats = 3.
+    horizon = 10
+    free_nats = 1.
     kl_scale = 1.
     expl_scale = .3
     alpha = .8
 
     #model
-    actor_layers = [32, 32]
-    critic_layers = [32, 32]
-    deter_dim = 100
-    stoch_dim = 30
+    actor_layers = 3*[32]
+    critic_layers = 3*[32]
+    wm_layers = 3*[32]
+    deter_dim = 64
+    stoch_dim = 12
     emb_dim = 32
 
     #train
@@ -38,7 +40,7 @@ class Dreamer:
     def __init__(self, config):
         self.c = config
         obs_dim, act_dim, enc_obs_dim = self._make_env()
-        self.callback = None
+        self.callback = SummaryWriter(log_dir='./dreamer_logdir')
         self.agent = Agent(enc_obs_dim, act_dim, self.encoder, self.decoder, self.callback, config)
 
     def learn(self):
