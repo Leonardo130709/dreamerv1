@@ -1,4 +1,4 @@
-from .utils import build_mlp, safe_softplus
+from .utils import build_mlp, TanhTransform
 import torch
 nn = torch.nn
 td = torch.distributions
@@ -12,20 +12,24 @@ class DenseNormal(nn.Module):
 
     def forward(self, x):
         mu, std = self.fc(x).chunk(2, -1)
-        std = safe_softplus(std) + self.min_std
+        std = torch.maximum(std, torch.full_like(std, -18.))
+        std = nn.functional.softplus(std) + self.min_std
         return mu, std
-        # dist = td.Normal(mu, std)
-        # return td.Independent(dist, 1)
 
 
 class NormalActor(nn.Module):
-    def __init__(self, obs_dim, act_dim, layers):
+    def __init__(self, obs_dim, act_dim, layers, mean_scale=5., init_std=5.):
         super().__init__()
-        self.model = DenseNormal(obs_dim, act_dim, layers, min_std=0.)
+        self.model = build_mlp([obs_dim] + layers + [2*act_dim])
+        self.init_std = torch.log(torch.tensor(init_std).exp() - 1)
+        self.mean_scale = mean_scale
 
     def forward(self, obs):
-        mu, std = self.model(obs)
+        mu, std = self.model(obs).chunk(2, -1)
+        mu = self.mean_scale * torch.tanh(mu / self.mean_scale)
+        std = nn.functional.softplus(std + self.init_std) + 1e-3
         dist = td.Normal(mu, std)
+        dist = td.transformed_distribution.TransformedDistribution(dist, TanhTransform())
         return td.Independent(dist, 1)
 
 
@@ -95,3 +99,50 @@ class RSSM(nn.Module):
         mu, std = self.split_state(state)[:2]
         dist = td.Normal(mu, std)
         return td.Independent(dist, 1)
+
+
+class PointCloudEncoder(nn.Module):
+    def __init__(self, in_features, depth, layers):
+        super().__init__()
+        coef = 2 ** (layers - 1)
+        self.model = nn.ModuleList([nn.Sequential(nn.Linear(in_features, coef*depth), nn.ReLU())])
+        for i in range(layers-1):
+            m = nn.Sequential(nn.Linear(coef*depth, coef // 2 * depth), nn.ReLU())
+            self.model.append(m)
+            coef //= 2
+
+        self.fc = nn.Sequential(
+            nn.Linear(depth, depth),
+            nn.Tanh(),
+        )
+
+    def forward(self, x):
+        for layer in self.model:
+            x = layer(x)
+        values, idx = torch.max(x, -2)
+        return self.fc(values)
+
+
+class PointCloudDecoder(nn.Module):
+    def __init__(self, in_features, out_features, depth, layers, pn_number):
+        super().__init__()
+
+        self.coef = 2**(layers-1)
+        self.fc = nn.Sequential(
+            nn.Linear(in_features, self.coef * depth * pn_number),
+            nn.ELU(inplace=True),
+        )
+
+        self.deconvs = nn.ModuleList([nn.Unflatten(-1, (pn_number, self.coef * depth))])
+        for _ in range(layers-1):
+            self.deconvs.append(nn.Linear(self.coef * depth, self.coef * depth // 2))
+            self.deconvs.append(nn.ELU(inplace=True))
+            self.coef //= 2
+
+        self.deconvs.append(nn.Linear(depth, out_features))
+
+    def forward(self, x):
+        x = self.fc(x)
+        for layer in self.deconvs:
+            x = layer(x)
+        return x
