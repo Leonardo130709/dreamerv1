@@ -75,8 +75,7 @@ class Agent(nn.Module):
         self.callback.add_scalar('train/model_grads', utils.grads_sum(self._model_params), self._step)
 
         self.wm_optim.zero_grad()
-        # todo: careful with retain_graph
-        model_loss.backward(retain_graph=True)
+        model_loss.backward()
         clip_grad_norm_(self._model_params, self._c.max_grad)
         self._model_params.requires_grad_(False)
 
@@ -90,7 +89,7 @@ class Agent(nn.Module):
         ent = -log_prob
         # reinforce_loss = -log_probs*(target_values - values).detach()
         reinforce_loss = 0
-        actor_gain = -self._c.rho * reinforce_loss + (1 - self._c.rho) * target_values + self._c.eta * ent
+        actor_gain = -self._c.rho * reinforce_loss + (1 - self._c.rho) * target_values# + self._c.eta * ent
         discount = self.masked_discount(target_values, 0)
         actor_loss = - torch.mean(discount * actor_gain)
 
@@ -113,7 +112,8 @@ class Agent(nn.Module):
         self.wm_optim.step()
         self.actor_optim.step()
         self.critic_optim.step()
-        utils.soft_update(self._target_critic, self.critic, self._c.critic_polyak)
+        with torch.no_grad():
+            utils.soft_update(self._target_critic, self.critic, self._c.critic_polyak)
         self._step += 1
 
         return model_loss, actor_loss, critic_loss
