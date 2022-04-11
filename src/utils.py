@@ -6,13 +6,18 @@ import random
 from torch.utils.data import Dataset
 from dm_control import suite
 import math
+import dataclasses
+from abc import ABC
+from ruamel.yaml import YAML
 nn = torch.nn
 F = nn.functional
 td = torch.distributions
 
 
-def build_mlp(sizes, act=nn.ELU):
+def build_mlp(*sizes, act=nn.ELU):
     mlp = []
+    if len(sizes) == 1:
+        sizes = sizes[0]
     for i in range(1, len(sizes)):
         mlp.append(nn.Linear(sizes[i-1], sizes[i]))
         mlp.append(act())
@@ -36,29 +41,6 @@ def make_env(name, **kwargs):
     return suite.load(domain, task, **kwargs)
 
 
-def build_encoder_decoder(configs, obs_shape):
-    encoder = []
-    decoder = []
-    feat_dim = configs.stoch_dim + configs.deter_dim
-    if configs.encoder == 'MLP':
-        obs_dim = obs_shape[0]
-        encoder = [build_mlp([obs_dim, configs.emb_dim])]
-        decoder = [build_mlp([configs.deter_dim + configs.stoch_dim, obs_dim])]
-    elif configs.encoder == 'PointNet':
-        from .models import PointCloudDecoder, PointCloudEncoder
-        encoder.append(PointCloudEncoder(obs_shape[-1], configs.pn_depth, configs.pn_layers))
-        decoder.append(PointCloudDecoder(feat_dim, 3, configs.pn_depth, configs.pn_layers, obs_shape[0]))
-    elif configs.encoder == 'CNN':
-        from .models import PixelEncoder, PixelDecoder
-        enc = PixelEncoder(obs_shape[0], configs.cnn_depth, configs.cnn_layers)
-        _, _, width, height = enc.conv(torch.ones(1, *obs_shape)).shape
-        encoder.append(enc)
-        decoder.append(PixelDecoder(feat_dim, width, height, obs_shape[0], configs.cnn_depth, configs.cnn_layers))
-    else:
-        raise NotImplementedError
-    return nn.Sequential(*encoder), nn.Sequential(*decoder)
-
-
 def gve(rewards, values, discount, disclam):
     # seq_len, batch_size, _ = rewards.shape
     # assert values.shape == rewards.shape
@@ -75,11 +57,15 @@ def gve(rewards, values, discount, disclam):
 def gve2(rewards, values, discount, disclam):
     target_values = []
     last_val = values[-1]
-    for r, v in zip(rewards[:-1].flip(-1), values[1:].flip(-1)):
+    for r, v in zip(rewards[:-1].flip(0), values[1:].flip(0)):
         last_val = r + discount*(disclam*last_val + (1.-disclam)*v)
         target_values.append(last_val)
+    return torch.stack(target_values).flip(0)
 
-    return torch.stack(target_values).flip(-1)
+
+def soft_update(target, online, rho):
+    for pt, po in zip(target.parameters(), online.parameters()):
+        pt.copy_(rho * pt + (1. - rho) * po)
 
 
 def simulate(env, policy, training):
@@ -188,3 +174,17 @@ class PointCloudGenerator:
         depth = self.reshape_depth(depth)
         xyz = depth * self.uv1
         return xyz
+
+
+@dataclasses.dataclass
+class AbstractConfig(ABC):
+    def save(self, file_path):
+        yaml = YAML()
+        with open(file_path, 'w') as f:
+            yaml.dump(dataclasses.asdict(self), f)
+
+    def load(self, file_path):
+        yaml = YAML()
+        with open(file_path) as f:
+            config_dict = yaml.load(f)
+        return dataclasses.replace(self, **config_dict)
