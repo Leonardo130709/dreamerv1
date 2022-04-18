@@ -195,7 +195,7 @@ class PointCloudEncoder(nn.Module):
             values = torch.gather(x, -2, indices.unsqueeze(-2)).squeeze(-2)
         else:
             values, indices = torch.max(x, -2)
-        return self.fc(values), indices
+        return self.fc(values)
 
 
 class PixelEncoder(nn.Module):
@@ -224,7 +224,7 @@ class PixelEncoder(nn.Module):
         img = self.convs(img)
         if reshape:
             img = img.reshape(seq_len, batch_size, -1)
-        return img, None
+        return img
 
 
 class PixelDecoder(nn.Module):

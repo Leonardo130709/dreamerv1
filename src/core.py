@@ -18,11 +18,11 @@ class Config(utils.AbstractConfig):
     disclam: float = .95
     horizon: int = 15
     kl_scale: float = 1.
-    expl_scale: float = .5
+    expl_scale: float = .3
     alpha: float = .8
     rho: float = 0.
     eta: float = 1e-4
-    action_repeat = 2
+    action_repeat: int = 2
 
     #model
     actor_layers: tuple = (256, 256)
@@ -35,16 +35,17 @@ class Config(utils.AbstractConfig):
     pn_layers: tuple = (64, 128)
     pn_depth: int = 32
     pn_number: int = 600
+    pn_dropout: float = 0.
 
     #train
     actor_lr: float = 8e-5
     critic_lr: float = 8e-5
     critic_polyak: float = .99
     wm_lr: float = 6e-4
-    batch_size: int = 40
+    batch_size: int = 50
     max_grad: float = 100.
     seq_len: int = 50
-    buffer_capacity: int = 3*10**2
+    buffer_capacity: int = 5*10**2
     training_steps: int = 400
     eval_freq: int = 10000
 
@@ -103,7 +104,7 @@ class Dreamer:
             env = wrappers.dmWrapper(env)
         elif self.config.observe == 'pixels':
             env = wrappers.PixelsToGym(env)
-        elif self.config.observe == 'point_clouds':
+        elif self.config.observe == 'point_cloud':
             env = wrappers.depthMapWrapper(env, device=self.config.device, points=self.config.pn_number, camera_id=0)
         else:
             raise NotImplementedError
