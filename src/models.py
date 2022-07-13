@@ -1,3 +1,5 @@
+import pdb
+
 from .utils import build_mlp, TanhTransform
 import torch
 from torchvision import transforms as T
@@ -23,15 +25,18 @@ class NormalActor(nn.Module):
     def __init__(self, obs_dim, act_dim, layers, mean_scale=5., init_std=5.):
         super().__init__()
         self.model = build_mlp(obs_dim, *layers, 2*act_dim)
-        self.init_std = torch.log(torch.tensor(init_std).exp() - 1)
+        self.init_std = torch.log(torch.tensor(init_std).exp() - 1.)
         self.mean_scale = mean_scale
 
     def forward(self, obs):
         mu, std = self.model(obs).chunk(2, -1)
         mu = self.mean_scale * torch.tanh(mu / self.mean_scale)
-        std = F.softplus(std + self.init_std) + 1e-7
+        std = F.softplus(std + self.init_std) + 1e-4
         dist = td.Normal(mu, std)
-        dist = td.transformed_distribution.TransformedDistribution(dist, TanhTransform())
+        dist = td.transformed_distribution.TransformedDistribution(
+            dist,
+            TanhTransform(cache_size=1)
+        )
         return td.Independent(dist, 1)
 
 
@@ -59,6 +64,7 @@ class RSSM(nn.Module):
     def obs_step(self, obs, prev_action, prev_state):
         prior = self.img_step(prev_action, prev_state)
         deter = self.split_state(prior)[-1]
+        pdb.set_trace()
         x = torch.cat([obs, deter], -1)
         mu, std = self.infer(x)
         return self.make_state(mu, std, deter), prior
