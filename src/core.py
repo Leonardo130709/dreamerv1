@@ -1,61 +1,14 @@
 import pathlib
-from dataclasses import dataclass
-from .agent import Agent
+from .agent import Dreamer
 from . import utils, wrappers
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 import numpy as np
-import pdb
 
 torch.autograd.set_detect_anomaly(True)
 
-
-@dataclass
-class Config(utils.AbstractConfig):
-    #task
-    discount: float = .99
-    disclam: float = .95
-    horizon: int = 15
-    kl_scale: float = 1.
-    expl_scale: float = .3
-    alpha: float = .8
-    rho: float = 0.
-    eta: float = 1e-4
-    action_repeat: int = 2
-
-    #model
-    actor_layers: tuple = (256, 256)
-    critic_layers: tuple = (256, 256)
-    wm_layers: tuple = (200, 200)
-    deter_dim: int = 164
-    stoch_dim: int = 24
-    obs_emb_dim: int = 32
-
-    pn_layers: tuple = (64, 128)
-    pn_depth: int = 32
-    pn_number: int = 600
-    pn_dropout: float = 0.
-
-    #train
-    actor_lr: float = 8e-5
-    critic_lr: float = 8e-5
-    critic_polyak: float = .99
-    wm_lr: float = 6e-4
-    batch_size: int = 50
-    max_grad: float = 100.
-    seq_len: int = 50
-    buffer_capacity: int = 5*10**2
-    training_steps: int = 400
-    eval_freq: int = 10000
-
-    device: str = 'cuda'
-    observe: str = 'states'
-    task: str = 'walker_stand'
-    logdir: str = 'dreamer_logdir'
-
-
-class Dreamer:
+class RLAlg:
     def __init__(self, config):
         self.config = config
         obs_dim, act_dim = self._make_env()
