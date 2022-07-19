@@ -34,40 +34,40 @@ class Config(BaseConfig):
     #task
     discount: float = .99
     disclam: float = .95
-    horizon: int = 15
+    horizon: int = 10
     kl_scale: float = 1.
     expl_scale: float = .3
     alpha: float = .8
-    rho: float = 0.
-    eta: float = 1e-4
+    entropy_coef: float = 0.
     action_repeat: int = 2
 
     #model
-    actor_layers: tuple = (256, 256)
-    critic_layers: tuple = (256, 256)
-    wm_layers: tuple = (200, 200)
-    deter_dim: int = 164
-    stoch_dim: int = 24
-    obs_emb_dim: int = 32
+    actor_layers: tuple = (64, 32)
+    critic_layers: tuple = (100, 50)
+    wm_layers: tuple = (64, 64)
+    deter_dim: int = 64
+    stoch_dim: int = 12
+    obs_emb_dim: int = 50
 
-    pn_layers: tuple = (64, 128)
-    pn_depth: int = 32
-    pn_number: int = 600
-    pn_dropout: float = 0.
+    pn_layers: tuple = (64, 128, 256)
+    pn_number: int = 100
+    stride: int = -1
 
     #train
     actor_lr: float = 8e-5
     critic_lr: float = 8e-5
-    critic_polyak: float = .99
     wm_lr: float = 6e-4
-    batch_size: int = 50
-    max_grad: float = 100.
+    critic_polyak: float = .01
     seq_len: int = 50
+    batch_size: int = 50
+    spi: int = 128
+    burn_in: int = 5
+    max_grad: float = 50.
     buffer_capacity: int = 5*10**2
-    training_steps: int = 400
     eval_freq: int = 10000
 
     device: str = 'cuda'
-    observe: str = 'states'
+    observe: str = 'point_cloud'
     task: str = 'walker_stand'
     logdir: str = 'logdir/tmp'
+    debug: bool = True

@@ -1,155 +1,187 @@
+import collections
 import numpy as np
-import gym
-from gym.spaces import Box
-import torch
-from .utils import PointCloudGenerator
-import ctypes
-from dm_control.mujoco.wrapper import MjvOption
+import dm_env
 from dm_control.suite.wrappers import pixels
 
 
-class Wrapper:
-    """ Partially solves problem with  compatibility"""
-
-    def __init__(self, env):
+class Wrapper(dm_env.Environment):
+    """This allows to modify attributes which agent observes and to pack it back."""
+    def __init__(self, env: dm_env.Environment):
         self.env = env
-        self._observation_space, self._action_space = self._infer_spaces(env)
-
-    def observation(self, timestamp):
-        return timestamp
-
-    def reward(self, timestamp):
-        return np.float32(timestamp.reward)
-
-    def done(self, timestamp):
-        return timestamp.last()
-
-    def step(self, action):
-        timestamp = self.env.step(action)
-        obs = self.observation(timestamp)
-        r = self.reward(timestamp)
-        d = self.done(timestamp)
-        return obs, r, d, None
-
-    def reset(self):
-        return self.observation(self.env.reset())
 
     @staticmethod
-    def _infer_spaces(env):
-        lim = float('inf')
-        spec = env.action_spec()
-        action_space = Box(low=spec.minimum.astype(np.float32), dtype=np.float32,
-                           high=spec.maximum.astype(np.float32), shape=spec.shape)
-        ar = list(env.observation_spec().values())[0]
+    def observation(timestep: dm_env.TimeStep):
+        return timestep.observation
 
-        obs_sample = np.concatenate(list(map(lambda ar: ar.generate_value() if ar.shape != () else [1],
-                                             env.observation_spec().values())))
+    @staticmethod
+    def reward(timestep: dm_env.TimeStep) -> float:
+        return timestep.reward
 
-        obs_space = Box(low=-lim, high=lim, shape=obs_sample.shape, dtype=np.float32)#ar.dtype)
-        return obs_space, action_space
+    def step(self, action) -> dm_env.TimeStep:
+        timestep = self.env.step(action)
+        return self._wrap_timestep(timestep)
 
-    def __getattr__(self, item):
-        return getattr(self.env, item)
+    def reset(self) -> dm_env.TimeStep:
+        return self._wrap_timestep(self.env.reset())
+
+    def _wrap_timestep(self, timestep) -> dm_env.TimeStep:
+        return timestep._replace(
+            reward=self.reward(timestep),
+            observation=self.observation(timestep)
+        )
+
+    def action_spec(self) -> dm_env.specs.Array:
+        return self.env.action_spec()
+
+    def observation_spec(self) -> dm_env.specs.Array:
+        return self.env.observation_spec()
 
     @property
-    def unwrapped(self):
-        env = self
-        while hasattr(env, 'env'):
-            env = env.env
-        return env
-
-    @property
-    def observation_space(self):
-        return self._observation_space
-
-    @property
-    def action_space(self):
-        return self._action_space
+    def physics(self):
+        return self.env.physics
 
 
-class dmWrapper(Wrapper):
+class StatesWrapper(Wrapper):
+    # Use dm_control flat_observation environment kwarg instead.
+    """ Converts OrderedDict obs to 1-dim np.ndarray[np.float32]. """
+    def __init__(self, env):
+        super().__init__(env)
+        self._observation_spec = self._infer_obs_specs(env)
+
     def observation(self, timestamp):
-        obs = np.array([])
+        obs = []
         for v in timestamp.observation.values():
-            if not v.ndim:
+            if v.ndim == 0:
                 v = v[None]
-            obs = np.concatenate((obs, v))
+            obs.append(v.flatten())
+        obs = np.concatenate(obs)
         return obs.astype(np.float32)
 
+    @staticmethod
+    def _infer_obs_specs(env) -> dm_env.specs.Array:
+        dim = sum((np.prod(ar.shape) for ar in env.observation_spec().values()))
+        return dm_env.specs.Array(shape=(dim,), dtype=np.float32, name='states')
 
-class FrameSkip(gym.Wrapper):
-    def __init__(self, env, frames_number):
+    def observation_spec(self):
+        return self._observation_spec
+
+
+class ActionRepeat(Wrapper):
+    """Repeat the same action multiple times."""
+    def __init__(self, env, frames_number: int):
         super().__init__(env)
         self.fn = frames_number
 
     def step(self, action):
-        R = 0
-        for i in range(self.fn):
-            next_obs, reward, done, info = self.env.step(action)
-            R += reward
-            if done:
+        rew_sum = 0.
+        for _ in range(self.fn):
+            timestep = self.env.step(action)
+            rew_sum += timestep.reward
+            if timestep.last():
                 break
-        return np.float32(next_obs), np.float32(R), done, info
-
-    def reset(self):
-        return np.float32(self.env.reset())
+        return timestep._replace(reward=rew_sum)
 
 
-class depthMapWrapper(Wrapper):
-
-    def __init__(self, env,
-                 camera_id=0,
-                 height=240,
-                 width=320,
-                 device='cpu',
-                 return_pos=False,
-                 points=1000,
+class PointCloudWrapperV2(Wrapper):
+    def __init__(self,
+                 env,
+                 pn_number: int = 1000,
+                 render_kwargs=None,
+                 append_rgb=False,
+                 stride: int = -1
                  ):
         super().__init__(env)
-        self.env = env
-        self.points = points
-        self._depth_kwargs = dict(camera_id=camera_id, height=height, width=width,
-                                  depth=True, scene_option=self._prepare_scene())
-        self.return_pos = return_pos
-        self.pcg = PointCloudGenerator(**self.pc_params, device=device)
+        self.render_kwargs = render_kwargs or dict(camera_id=0, height=240, width=320)
+        assert {'camera_id', 'height', 'width'}.issubset(self.render_kwargs.keys())
 
-    def observation(self, timestamp):
-        depth = self.env.physics.render(**self._depth_kwargs)
-        pc = self.pcg.get_PC(depth)
-        pc = self._segmentation(pc)
-        if self.return_pos:
-            pos = self.env.physics.position()
-            return pc, pos
-        return pc.detach().cpu().numpy()
+        self._grid = 1. + np.mgrid[:self.render_kwargs['height'], :self.render_kwargs['width']]
 
-    def _segmentation(self, pc):
-        dist_thresh = 19
-        pc = pc[pc[..., 2] < dist_thresh] # smth like infty cutting
-        if self.points:
-            amount = pc.size(-2)
-            if amount > self.points:
-                ind = torch.randperm(amount, device=self.pcg.device)[:self.points]
-                pc = torch.index_select(pc, -2, ind)
-            elif amount < self.points:
-                zeros = torch.zeros(self.points - amount, *pc.shape[1:], device=self.pcg.device)
-                pc = torch.cat([pc, zeros])
+        self.stride = stride
+        self.pn_number = pn_number
+        self.append_rgb = append_rgb
+        self._selected_geoms = np.array(self._segment_by_name(
+            env.physics, ('ground', 'wall', 'floor'), **self.render_kwargs
+        ))
+
+    def observation(self, timestep):
+        depth = self.env.physics.render(depth=True, **self.render_kwargs)
+        pcd = self._point_cloud_from_depth(depth)
+        mask = self._mask(pcd)
+
+        if self.append_rgb:
+            rgb = self._get_colours()
+            pcd = np.concatenate((pcd, rgb), axis=1)
+
+        pcd = self._downsampling(pcd[mask])
+        return self._to_fixed_number(pcd).astype(np.float32)
+
+    def _point_cloud_from_depth(self, depth):
+        f_inv, cx, cy = self._inverse_intrinsic_matrix_params()
+        x, y = (depth * self._grid)
+        x = (x - cx) * f_inv
+        y = (y - cy) * f_inv
+
+        pc = np.stack((x, y, depth), axis=-1)
+        return pc.reshape(-1, 3)
+        # rot_mat = self.env.physics.data.cam_xmat[self.render_kwargs['camera_id']].reshape(3, 3)
+        # return np.einsum('ij, hwi->hwj', rot_mat, pc).reshape(-1, 3)
+
+    def _to_fixed_number(self, pc):
+        n = pc.shape[0]
+        if n == 0:
+            pc = np.zeros((self.pn_number, 3))
+        elif n <= self.pn_number:
+            pc = np.pad(pc, ((0, self.pn_number - n), (0, 0)), mode='edge')
+        else:
+            pc = np.random.permutation(pc)[:self.pn_number]
         return pc
 
-    def _prepare_scene(self):
-        scene = MjvOption()
-        scene.flags = (ctypes.c_uint8*22)(0)
+    def _inverse_intrinsic_matrix_params(self):
+        height = self.render_kwargs['height']
+        cx = (height - 1) / 2.
+        cy = (self.render_kwargs['width'] - 1) / 2.
+        fov = self.env.physics.model.cam_fovy[self.render_kwargs['camera_id']]
+        f_inv = 2 * np.tan(np.deg2rad(fov) / 2.) / height
+        return f_inv, cx, cy
 
-        return scene
+    def _mask(self, point_cloud):
+        seg = self.env.physics.render(segmentation=True, **self.render_kwargs)
+        segmentation = np.isin(seg[..., 0].flatten(), self._selected_geoms)
+        truncate = point_cloud[..., 2] < 10.
+        return np.logical_and(segmentation, truncate)
 
-    @property
-    def pc_params(self):
-        # device
-        fovy = self.env.physics.model.cam_fovy[0]
-        return dict(
-            camera_fovy=fovy,
-            image_height=self._depth_kwargs.get('height', 240),
-            image_width=self._depth_kwargs.get('width', 320)
-        )
+    def observation_spec(self):
+        return dm_env.specs.Array(shape=(self.pn_number, 3 + 3*self.append_rgb),
+                                  dtype=np.float32,
+                                  name='point_cloud' + '+rgb'*self.append_rgb)
+
+    @staticmethod
+    def _segment_by_name(physics, bad_geoms_names, **render_kwargs):
+        geom_ids = physics.render(segmentation=True, **render_kwargs)[..., 0]
+
+        def _predicate(geom_id):
+            if geom_id == -1:  # infinity
+                return False
+            return all(
+                map(
+                    lambda name: name not in physics.model.id2name(geom_id, 'geom'),
+                    bad_geoms_names
+                )
+            )
+
+        return list(filter(_predicate, np.unique(geom_ids).tolist()))
+
+    def _downsampling(self, pcd):
+        if self.stride < 0:
+            adaptive_stride = pcd.shape[0] // self.pn_number
+            return pcd[::max(adaptive_stride, 1)]
+        else:
+            return pcd[::self.stride]
+
+    def _get_colours(self):
+        rgb = self.env.physics.render(**self.render_kwargs).reshape(3, -1).astype(np.float32)
+        rgb /= 255.
+        return rgb.T
 
 
 class PixelsToGym(Wrapper):
@@ -163,7 +195,6 @@ class PixelsToGym(Wrapper):
         obs = np.array(obs)
         return obs.transpose((2, 1, 0))
 
-    @property
-    def observation_space(self):
-        # correspondent space have to be extracted from the dm_control API -> gym API
-        return Box(low=0., high=1., shape=(64, 64, 3))
+    def observation_spec(self) -> dm_env.specs.Array:
+        spec = self.env.observation_spec()
+        return spec.replace_(shape=spec.shape.transpose((2, 1, 0)))

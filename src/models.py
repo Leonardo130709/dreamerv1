@@ -1,7 +1,6 @@
 from .utils import build_mlp
 import torch
 from collections import Iterable
-from torchvision import transforms as T
 nn = torch.nn
 F = nn.functional
 td = torch.distributions
@@ -21,7 +20,7 @@ class DenseNormal(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, obs_dim, act_dim, layers, mean_scale=5., init_std=5.):
+    def __init__(self, obs_dim, act_dim, layers, mean_scale=1., init_std=5.):
         super().__init__()
         self.model = build_mlp(obs_dim, *layers, 2*act_dim)
         self.init_std = torch.log(torch.tensor(init_std).exp() - 1.)
@@ -42,6 +41,8 @@ class Actor(nn.Module):
         return dist
 
 
+#TODO: RSSM State better be named -- use NamedTuple
+#   right now the only reason to use torch.Tensor is simplified batching throughout
 class RSSM(nn.Module):
     def __init__(self,
                  obs_dim: int,
@@ -117,7 +118,7 @@ class RSSM(nn.Module):
 
 class PointCloudEncoder(nn.Module):
     """PointNet with an option to process global features of selected points."""
-    def __init__(self, in_channels, num_frames, out_features, layers, act=nn.ELU, features_from_layers=()):
+    def __init__(self, in_channels, out_features, layers, act=nn.ELU, features_from_layers=()):
         super().__init__()
 
         layers = (in_channels,) + layers
@@ -135,7 +136,7 @@ class PointCloudEncoder(nn.Module):
 
         self.fc_size = layers[-1] * (1 + sum([layers[i] for i in self.selected_layers]))
         self.ln_emb = nn.Sequential(
-            nn.Linear(num_frames*self.fc_size, out_features),
+            nn.Linear(self.fc_size, out_features),
             nn.LayerNorm(out_features),
             nn.Tanh()
         )
@@ -152,7 +153,7 @@ class PointCloudEncoder(nn.Module):
                 [self._gather(features[ind], indices) for ind in self.selected_layers],
                 -1)
             values = torch.cat((values.unsqueeze(-1), selected_features), -1).flatten(-2)
-        return self.ln_emb(values.flatten(-2, -1))
+        return self.ln_emb(values)
 
     @staticmethod
     def _gather(features, indices):
@@ -161,13 +162,13 @@ class PointCloudEncoder(nn.Module):
 
 
 class PointCloudDecoder(nn.Module):
-    def __init__(self, in_features: int, pn_number: int, num_frames: int, out_channels: int, layers: tuple, act=nn.ELU):
+    def __init__(self, in_features: int, pn_number: int, out_channels: int, layers: tuple, act=nn.ELU):
         super().__init__()
 
         layers = layers + (out_channels,)
         deconvs = [
-            nn.Linear(in_features, num_frames*pn_number*layers[0]),
-            nn.Unflatten(-1, (num_frames, pn_number, layers[0]))
+            nn.Linear(in_features, pn_number*layers[0]),
+            nn.Unflatten(-1, (pn_number, layers[0]))
                    ]
         for i in range(len(layers)-1):
             deconvs.extend([

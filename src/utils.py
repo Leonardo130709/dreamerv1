@@ -70,10 +70,10 @@ def soft_update(target, online, rho):
 
 
 def simulate(env, policy, training):
-    obs = env.reset()
+    obs = env.reset().observation
     done = False
     prev_state = None
-    observations, actions, rewards, states = [], [], [], []  # also states for recurrent agent
+    observations, actions, rewards, dones, states = [], [], [], [], []  # also states for recurrent agent
     while not done:
         if prev_state is not None:
             states.append(prev_state[0].detach().cpu().flatten().numpy())
@@ -81,11 +81,14 @@ def simulate(env, policy, training):
         else:
             action, prev_state = policy(obs, prev_state, training)
             states.append(torch.zeros_like(prev_state[0]).detach().cpu().flatten().numpy())
-        new_obs, reward, done, _ = env.step(action)
+        timestep = env.step(action)
+        reward = np.float32(timestep.reward)[None]
+        done = timestep.last()
         observations.append(obs)
         actions.append(action)
-        rewards.append([reward])
-        obs = new_obs
+        rewards.append(reward)
+        dones.append(np.float32(done)[None])
+        obs = timestep.observation
 
     tr = dict(
         observations=observations,
@@ -119,3 +122,10 @@ class TrajectoryBuffer(Dataset):
     def sample_subset(self, size):
         idx = np.random.randint(0, len(self._data), size=size)
         return Subset(self, idx)
+
+
+def weight_init(module):
+    if isinstance(module, nn.Linear):
+        nn.init.orthogonal_(module.weight)
+        nn.init.zeros_(module.bias)
+
