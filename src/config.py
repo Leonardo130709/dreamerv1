@@ -34,19 +34,18 @@ class Config(BaseConfig):
     #task
     discount: float = .99
     disclam: float = .95
-    horizon: int = 10
+    horizon: int = 15
     kl_scale: float = 1.
-    expl_scale: float = .3
     alpha: float = .8
-    entropy_coef: float = 0.
+    entropy_coef: float = 1e-3
     action_repeat: int = 2
 
     #model
-    actor_layers: tuple = (64, 32)
-    critic_layers: tuple = (100, 50)
-    wm_layers: tuple = (64, 64)
-    deter_dim: int = 64
-    stoch_dim: int = 12
+    actor_layers: tuple = (256, 256)
+    critic_layers: tuple = (256, 256)
+    wm_layers: tuple = (256, 256)
+    deter_dim: int = 256
+    stoch_dim: int = 30
     obs_emb_dim: int = 50
 
     pn_layers: tuple = (64, 128, 256)
@@ -55,15 +54,16 @@ class Config(BaseConfig):
 
     #train
     actor_lr: float = 8e-5
-    critic_lr: float = 8e-5
+    critic_lr: float = 1e-4
     wm_lr: float = 6e-4
     critic_polyak: float = .01
     seq_len: int = 50
     batch_size: int = 50
     spi: int = 128
     burn_in: int = 5
-    max_grad: float = 50.
+    max_grad: float = 100.
     buffer_capacity: int = 5*10**2
+    total_steps: int = 4e6
     eval_freq: int = 10000
 
     device: str = 'cuda'
@@ -71,3 +71,4 @@ class Config(BaseConfig):
     task: str = 'walker_stand'
     logdir: str = 'logdir/tmp'
     debug: bool = True
+    seed: int = 0

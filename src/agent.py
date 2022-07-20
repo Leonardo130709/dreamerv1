@@ -10,6 +10,8 @@ F = nn.functional
 td = torch.distributions
 
 
+#TODO: while continuous control may not require discounts,
+# it is useful to consider discounts in the alg.
 class Dreamer(nn.Module):
     def __init__(self, env, config, callback):
         super().__init__()
@@ -36,11 +38,8 @@ class Dreamer(nn.Module):
 
         if training:
             action = dist.sample()
-            #action = action + self._c.expl_scale * torch.randn_like(action)
         else:
             action = torch.tanh(dist.base_dist.mean)
-            # action = dist.sample([100]).mean(0) # just use tanh
-        # action = torch.clamp(action, -1, 1)
         return action, (latent, action)
 
     def learn(self, observations, actions, rewards, states):
@@ -122,29 +121,28 @@ class Dreamer(nn.Module):
         assert not states.requires_grad
         # could try with priors instead of posts
         imag_feat, actions = self._imagine_ahead(states)
+
         rewards = self.reward_model(imag_feat)
         values = self._target_critic(imag_feat)
         target_values = utils.gve2(rewards, values, self._c.discount, self._c.disclam)
         assert target_values.requires_grad
         values, imag_feat, actions = map(lambda t: t[:-1], (values, imag_feat, actions))
 
-        with torch.no_grad():
-            dist = self.actor(imag_feat)
-            log_prob = dist.log_prob(actions)
-            ent = -log_prob.mean()
+        dist = self.actor(imag_feat.detach())
+        log_prob = dist.log_prob(actions.detach())
 
-        # may be use normalized_values for policy_update
+        # remove scale from values -> to lr only.
         # normalized_values = (target_values - target_values.deatch().mean()) / target_values.deatch().std()
 
-        actor_loss = - target_values  # remove scale from values -> to lr
-        actor_loss = torch.mean(self._sequence_discount(actor_loss) * actor_loss)
-        #todo make common discount
-        values = self.critic(imag_feat.detach())
+        actor_loss = - target_values + self._c.entropy_coef * log_prob.unsqueeze(-1)
+        discount = self._sequence_discount(actor_loss)
+        actor_loss = torch.mean(discount * actor_loss)
+        values = self.critic(imag_feat.detach()) # couple of unnecessary stop_grads: remove them
         critic_loss = (values - target_values.detach()).pow(2)
-        critic_loss = torch.mean(self._sequence_discount(critic_loss) * critic_loss)
+        critic_loss = torch.mean(discount * critic_loss)
 
         if self._c.debug:
-            self.callback.add_scalar('train/actor_ent', ent.detach().mean(), self._step)
+            self.callback.add_scalar('train/actor_ent', (-log_prob).detach().mean(), self._step)
             self.callback.add_scalar('train/actor_loss', actor_loss.detach().mean(), self._step)
             self.callback.add_scalar('train/mean_value', values.detach().mean(), self._step)
             self.callback.add_scalar('train/critic_loss', critic_loss.detach(), self._step)
@@ -169,6 +167,7 @@ class Dreamer(nn.Module):
             actions.append(action)
             state = self.wm.img_step(action, state)
 
+        #first state is from buffer, it is removed in dreamer v2
         states = torch.stack(states)
         actions = torch.stack(actions)
         return self.wm.get_feat(states), actions

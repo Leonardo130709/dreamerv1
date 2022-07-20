@@ -1,11 +1,11 @@
+import random
+from collections import deque
+
 import torch
+from torch.utils.data import Dataset, Subset
 #from torchaudio.functional import lfilter
 import numpy as np
-from collections import deque
-import random
-from torch.utils.data import Dataset, Subset
 from dm_control import suite
-from itertools import chain
 nn = torch.nn
 F = nn.functional
 td = torch.distributions
@@ -67,6 +67,14 @@ def gve2(rewards, values, discount, disclam):
 def soft_update(target, online, rho):
     for pt, po in zip(target.parameters(), online.parameters()):
         pt.data.copy_((1. - rho) * pt.data + rho * po.detach())
+
+
+class TruncatedTanhTransform(td.transforms.TanhTransform):
+    _lim = .9999
+
+    def _inverse(self, y):
+        y = torch.clamp(y, min=-self._lim, max=self._lim)
+        return y.atanh()
 
 
 def simulate(env, policy, training):

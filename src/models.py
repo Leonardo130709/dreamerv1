@@ -1,4 +1,4 @@
-from .utils import build_mlp
+from .utils import build_mlp, TruncatedTanhTransform
 import torch
 from collections import Iterable
 nn = torch.nn
@@ -7,9 +7,9 @@ td = torch.distributions
 
 
 class DenseNormal(nn.Module):
-    def __init__(self, in_features, out_features, layers=(32, 32), min_std=1e-2):
+    def __init__(self, in_features, out_features, layers=(32, 32), min_std=1e-1, act=nn.ELU):
         super().__init__()
-        self.fc = build_mlp(in_features, *layers, 2*out_features)
+        self.fc = build_mlp(in_features, *layers, 2*out_features, act=act)
         self.min_std = min_std
 
     def forward(self, x):
@@ -20,21 +20,22 @@ class DenseNormal(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, obs_dim, act_dim, layers, mean_scale=1., init_std=5.):
+    def __init__(self, obs_dim, act_dim, layers, mean_scale=1., init_std=5., act=nn.ELU):
         super().__init__()
-        self.model = build_mlp(obs_dim, *layers, 2*act_dim)
+        self.model = build_mlp(obs_dim, *layers, 2*act_dim, act=act)
         self.init_std = torch.log(torch.tensor(init_std).exp() - 1.)
         self.mean_scale = mean_scale
 
     def forward(self, obs):
         mu, std = self.model(obs).chunk(2, -1)
         mu = self.mean_scale * torch.tanh(mu / self.mean_scale)
-        std = F.softplus(std + self.init_std) + 1e-4
+        std = F.softplus(std + self.init_std) + 1e-3
         dist = td.Normal(mu, std)
         dist = td.transformed_distribution.TransformedDistribution(
             dist,
             td.transforms.IndependentTransform(
-                td.transforms.TanhTransform(cache_size=1),
+                TruncatedTanhTransform(cache_size=1),
+                # td.transforms.TanhTransform(cache_size=1),
                 reinterpreted_batch_ndims=1,
                 cache_size=1)
         )
@@ -43,6 +44,7 @@ class Actor(nn.Module):
 
 #TODO: RSSM State better be named -- use NamedTuple
 #   right now the only reason to use torch.Tensor is simplified batching throughout
+#   since there is no tf.nested
 class RSSM(nn.Module):
     def __init__(self,
                  obs_dim: int,
@@ -101,7 +103,7 @@ class RSSM(nn.Module):
 
     @staticmethod
     def make_state(mu, std, deter):
-        stoch = mu + torch.randn_like(std)*std
+        stoch = td.Normal(mu, std).rsample()
         return torch.cat([mu, std, stoch, deter], -1)
 
     def init_state(self, batch_size):

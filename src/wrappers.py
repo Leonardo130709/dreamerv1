@@ -1,4 +1,3 @@
-import collections
 import numpy as np
 import dm_env
 from dm_control.suite.wrappers import pixels
@@ -184,17 +183,37 @@ class PointCloudWrapperV2(Wrapper):
         return rgb.T
 
 
-class PixelsToGym(Wrapper):
-    def __init__(self, env):
+class PixelsWrapper(Wrapper):
+    channels = dict(rgb=3, rgbd=4, d=1, g=1, gd=2)
+    _grayscale_coef = np.array([0.299, 0.587, 0.114])
+
+    def __init__(self, env, render_kwargs=None, mode='rgb'):
         super().__init__(env)
-        self.env = pixels.Wrapper(self.env, render_kwargs={'camera_id': 0, 'height': 64, 'width': 64})
+        self.render_kwargs = render_kwargs or dict(camera_id=0, height=84, width=84)
+        self.mode = mode
 
     def observation(self, timestamp):
-        obs = timestamp.observation['pixels']
-        obs = np.array(obs) / 255.
-        obs = np.array(obs)
-        return obs.transpose((2, 1, 0))
+        if self.mode != 'd':
+            rgb = self.physics.render(**self.render_kwargs).astype(np.float32)
+            rgb /= 255.
+        obs = ()
+        if 'rgb' in self.mode:
+            obs += (rgb - .5,)
+        if 'd' in self.mode:
+            depth = self.physics.render(depth=True, **self.render_kwargs)
+            depth = np.where(depth > 10., 0., depth)  # truncate depth
+            depth /= depth.max()
+            obs += (depth[..., np.newaxis],)
+        if 'rgb' not in self.mode and 'g' in self.mode:
+            g = rgb @ self._grayscale_coef
+            obs += (g[..., np.newaxis],)
+        obs = np.concatenate(obs, -1)
+        return obs.transpose((2, 1, 0)).astype(np.float32)
 
-    def observation_spec(self) -> dm_env.specs.Array:
-        spec = self.env.observation_spec()
-        return spec.replace_(shape=spec.shape.transpose((2, 1, 0)))
+    def observation_spec(self):
+        shape = (
+            self.channels[self.mode],
+            self.render_kwargs.get('height', 240),
+            self.render_kwargs.get('width', 320)
+        )
+        return dm_env.specs.Array(shape=shape, dtype=np.float32, name=self.mode)

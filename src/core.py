@@ -6,15 +6,17 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 import numpy as np
+import time
 
-#TODO: remove
+# #TODO: remove after debug
 torch.autograd.set_detect_anomaly(True)
 
 
 class RLAlg:
     def __init__(self, config):
+        utils.set_seed(config.seed)
         self.config = config
-        self.env = self.make_env()
+        self.env = self.make_env(task_kwargs={'random': self.config.seed})
         self.task_path = pathlib.Path(config.logdir)
         self.callback = SummaryWriter(log_dir=config.logdir)
         self.agent = Dreamer(self.env, config, self.callback)
@@ -22,7 +24,8 @@ class RLAlg:
         self.interactions_count = 0
 
     def learn(self):
-        while True:
+        dur = time.time()
+        while self.interactions_count <= self.config.total_steps:
             tr = utils.simulate(self.env, self.policy, True)
             interactions = len(tr['actions'])
             self.interactions_count += interactions
@@ -49,6 +52,13 @@ class RLAlg:
                 self.callback.add_scalar('eval/return_std', np.std(res), self.interactions_count)
 
                 self.save()
+
+        dur = time.time() - dur
+        self.callback.add_hparams(
+            {k: v for k, v in vars(self.config).items()
+             if any(map(lambda t: isinstance(v, t), (int, float, bool)))},
+            dict(duration=dur, score=np.mean(res))
+        )
 
     def save(self):
         self.config.save(self.task_path / 'config.yml')
@@ -92,8 +102,8 @@ class RLAlg:
         env = utils.make_env(self.config.task, task_kwargs, environment_kwargs)
         if self.config.observe == 'states':
             env = wrappers.StatesWrapper(env)
-        elif self.config.observe == 'pixels':
-            env = wrappers.PixelsToGym(env)
+        elif self.config.observe in wrappers.PixelsWrapper.channels.keys():
+            env = wrappers.PixelsWrapper(env, mode=self.config.observe)
         elif self.config.observe == 'point_cloud':
             env = wrappers.PointCloudWrapperV2(
                 env,
