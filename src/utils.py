@@ -78,30 +78,33 @@ class TruncatedTanhTransform(td.transforms.TanhTransform):
 
 
 def simulate(env, policy, training):
-    obs = env.reset().observation
+    # Mind transition tuple structure: (o_t. a_tm1, r_t, h_tm1)
+    #   in contrast with default (o_tm1, a_tm1, r_t...)
+    observation = env.reset().observation
     done = False
     prev_state = None
     observations, actions, rewards, dones, states = [], [], [], [], []  # also states for recurrent agent
     while not done:
         if prev_state is not None:
             states.append(prev_state[0].detach().cpu().flatten().numpy())
-            action, prev_state = policy(obs, prev_state, training)
+            action, prev_state = policy(observation, prev_state, training)
         else:
-            action, prev_state = policy(obs, prev_state, training)
+            action, prev_state = policy(observation, prev_state, training)
             states.append(torch.zeros_like(prev_state[0]).detach().cpu().flatten().numpy())
         timestep = env.step(action)
+        observation = timestep.observation
         reward = np.float32(timestep.reward)[None]
         done = timestep.last()
-        observations.append(obs)
+        observations.append(observation)
         actions.append(action)
         rewards.append(reward)
         dones.append(np.float32(done)[None])
-        obs = timestep.observation
 
     tr = dict(
         observations=observations,
         actions=actions,
         rewards=rewards,
+        done_flags=dones,
         states=states,
     )
     for k, v in tr.items():
@@ -128,6 +131,7 @@ class TrajectoryBuffer(Dataset):
         return len(self._data)
 
     def sample_subset(self, size):
+        size = min(size, 100*len(self))
         idx = np.random.randint(0, len(self._data), size=size)
         return Subset(self, idx)
 

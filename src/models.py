@@ -65,6 +65,8 @@ class RSSM(nn.Module):
         self.cell = nn.GRUCell(self.act_dim + self.stoch_dim, self.deter_dim)
 
     def img_step(self, prev_action, prev_state):
+        # h_t = f(a_tm1, h_tm1, s_tm1)
+        # s_t ~ p(s|h_t)
         stoch, deter = self.split_state(prev_state)[-2:]
         x = torch.cat([stoch, prev_action], -1)
         deter = self.cell(x, deter)
@@ -72,6 +74,7 @@ class RSSM(nn.Module):
         return self.make_state(mu, std, deter)
 
     def obs_step(self, obs, prev_action, prev_state):
+        # s_t ~ q(s | h_t, o_t)
         prior = self.img_step(prev_action, prev_state)
         deter = self.split_state(prior)[-1]
         x = torch.cat([obs, deter], -1)

@@ -43,13 +43,13 @@ class Config(BaseConfig):
     #model
     actor_layers: tuple = (256, 256)
     critic_layers: tuple = (256, 256)
-    wm_layers: tuple = (256, 256)
-    deter_dim: int = 256
+    wm_layers: tuple = (200, 200)
+    deter_dim: int = 200
     stoch_dim: int = 30
     obs_emb_dim: int = 50
 
     pn_layers: tuple = (64, 128, 256)
-    pn_number: int = 100
+    pn_number: int = 200
     stride: int = -1
 
     #train

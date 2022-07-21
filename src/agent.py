@@ -1,5 +1,5 @@
 import torch
-from . import models, utils
+from . import models, utils, wrappers
 from copy import deepcopy
 from itertools import chain
 from torch.nn.utils import clip_grad_norm_
@@ -10,8 +10,8 @@ F = nn.functional
 td = torch.distributions
 
 
-#TODO: while continuous control may not require discounts,
-# it is useful to consider discounts in the alg.
+# TODO: while continuous control may not require discounts,
+#  it is useful to consider discounts in the alg.
 class Dreamer(nn.Module):
     def __init__(self, env, config, callback):
         super().__init__()
@@ -125,24 +125,25 @@ class Dreamer(nn.Module):
         rewards = self.reward_model(imag_feat)
         values = self._target_critic(imag_feat)
         target_values = utils.gve2(rewards, values, self._c.discount, self._c.disclam)
-        assert target_values.requires_grad
-        values, imag_feat, actions = map(lambda t: t[:-1], (values, imag_feat, actions))
-
-        dist = self.actor(imag_feat.detach())
-        log_prob = dist.log_prob(actions.detach())
+        imag_feat, actions = map(lambda t: t[:-1].detach(), (imag_feat, actions))
 
         # remove scale from values -> to lr only.
         # normalized_values = (target_values - target_values.deatch().mean()) / target_values.deatch().std()
 
-        actor_loss = - target_values + self._c.entropy_coef * log_prob.unsqueeze(-1)
+        dist = self.actor(imag_feat)
+        samples = dist.sample()
+        entropy = - dist.log_prob(samples)
+
+        assert target_values.requires_grad
+        actor_loss = - target_values - self._c.entropy_coef * entropy.unsqueeze(-1)
         discount = self._sequence_discount(actor_loss)
         actor_loss = torch.mean(discount * actor_loss)
-        values = self.critic(imag_feat.detach()) # couple of unnecessary stop_grads: remove them
+        values = self.critic(imag_feat) # couple of unnecessary stop_grads: remove them
         critic_loss = (values - target_values.detach()).pow(2)
         critic_loss = torch.mean(discount * critic_loss)
 
         if self._c.debug:
-            self.callback.add_scalar('train/actor_ent', (-log_prob).detach().mean(), self._step)
+            self.callback.add_scalar('train/actor_ent', entropy.detach().mean(), self._step)
             self.callback.add_scalar('train/actor_loss', actor_loss.detach().mean(), self._step)
             self.callback.add_scalar('train/mean_value', values.detach().mean(), self._step)
             self.callback.add_scalar('train/critic_loss', critic_loss.detach(), self._step)
@@ -154,22 +155,21 @@ class Dreamer(nn.Module):
         def policy(state):
             feat = self.wm.get_feat(state)
             dist = self.actor(feat.detach())
-            return dist.rsample()
+            action = dist.rsample()
+            return action
 
         # Imagine from the every state.
         # Avoid terminal state. Not used in continuous control.
-        state = posts[:-1].reshape(-1, posts.size(-1))
-        # First step also should be avoided since it comes from buffer
-        states, actions = [], []
+        state = posts.reshape(-1, posts.size(-1))
+        states, actions, log_probs = [], [], []
         for _ in range(self._c.horizon):
-            states.append(state)
             action = policy(state)
-            actions.append(action)
             state = self.wm.img_step(action, state)
+            states.append(state)
+            actions.append(action)
 
-        #first state is from buffer, it is removed in dreamer v2
-        states = torch.stack(states)
-        actions = torch.stack(actions)
+        # First state comes from buffer, so return should not be optimized ?? [1:]
+        states, actions = map(lambda t: torch.stack(t), (states, actions))
         return self.wm.get_feat(states), actions
 
     def _sequence_discount(self, x):
@@ -185,7 +185,7 @@ class Dreamer(nn.Module):
                                   self.act_dim,
                                   layers=self._c.actor_layers,
                                   mean_scale=1.,
-                                  init_std=1.)
+                                  init_std=2.)
         self.critic = utils.build_mlp(feat_dim, *self._c.critic_layers, 1)
 
         self._target_critic = deepcopy(self.critic).requires_grad_(False)
@@ -199,8 +199,8 @@ class Dreamer(nn.Module):
             obs_dim = self.observation_spec.shape[0]
             self.encoder = nn.Linear(obs_dim, self._c.obs_emb_dim)
             self.decoder = nn.Linear(feat_dim, obs_dim)
-        elif self._c.observe == 'pixels':
-            _, _, channels = self.observation_spec.shape
+        elif self._c.observe in wrappers.PixelsWrapper.channels.keys():
+            channels, _, _ = self.observation_spec.shape
             self.encoder = models.PixelsEncoder(channels, self._c.obs_emb_dim)
             self.decoder = models.PixelsDecoder(feat_dim, channels)
         elif self._c.observe == 'point_cloud':
