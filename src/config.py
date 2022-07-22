@@ -49,7 +49,7 @@ class Config(BaseConfig):
     obs_emb_dim: int = 50
 
     pn_layers: tuple = (64, 128, 256)
-    pn_number: int = 200
+    pn_number: int = 400
     stride: int = -1
 
     #train
@@ -61,7 +61,7 @@ class Config(BaseConfig):
     batch_size: int = 50
     spi: int = 128
     burn_in: int = 5
-    max_grad: float = 100.
+    max_grad: float = 50.
     buffer_capacity: int = 5*10**2
     total_steps: int = 4e6
     eval_freq: int = 10000

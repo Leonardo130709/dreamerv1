@@ -184,8 +184,8 @@ class Dreamer(nn.Module):
         self.actor = models.Actor(feat_dim,
                                   self.act_dim,
                                   layers=self._c.actor_layers,
-                                  mean_scale=1.,
-                                  init_std=2.)
+                                  mean_scale=5.,
+                                  init_std=1.)
         self.critic = utils.build_mlp(feat_dim, *self._c.critic_layers, 1)
 
         self._target_critic = deepcopy(self.critic).requires_grad_(False)
