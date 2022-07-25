@@ -64,11 +64,6 @@ def gve2(rewards, values, discount, disclam):
     return torch.stack(target_values).flip(0)
 
 
-def soft_update(target, online, rho):
-    for pt, po in zip(target.parameters(), online.parameters()):
-        pt.data.copy_((1. - rho) * pt.data + rho * po.detach())
-
-
 class TruncatedTanhTransform(td.transforms.TanhTransform):
     _lim = .9999
 

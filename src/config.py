@@ -56,7 +56,7 @@ class Config(BaseConfig):
     actor_lr: float = 8e-5
     critic_lr: float = 1e-4
     wm_lr: float = 6e-4
-    critic_polyak: float = .01
+    target_update: int = 100
     seq_len: int = 50
     batch_size: int = 50
     spi: int = 128

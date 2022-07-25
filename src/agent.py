@@ -76,8 +76,10 @@ class Dreamer(nn.Module):
         clip_grad_norm_(self.critic.parameters(), self._c.max_grad)
         self.critic_optim.step()
 
-        with torch.no_grad():
-            utils.soft_update(self._target_critic, self.critic, self._c.critic_polyak)
+        if self._step % self._c.target_update == 0:
+            for pt, po in zip(self._target_critic.parameters(), self.critic.parameters()):
+                pt.copy_(po.detach())
+
         self._step += 1
 
         if self._c.debug:
@@ -120,27 +122,26 @@ class Dreamer(nn.Module):
     def _policy_learning_and_improvement(self, states):
         assert not states.requires_grad
         # could try with priors instead of posts
-        imag_feat, actions = self._imagine_ahead(states)
+        imag_feat = self._imagine_ahead(states)
 
         rewards = self.reward_model(imag_feat)
         values = self._target_critic(imag_feat)
         target_values = utils.gve2(rewards, values, self._c.discount, self._c.disclam)
-        imag_feat, actions = map(lambda t: t[:-1].detach(), (imag_feat, actions))
 
         # remove scale from values -> to lr only.
         # normalized_values = (target_values - target_values.deatch().mean()) / target_values.deatch().std()
 
-        dist = self.actor(imag_feat)
+        imag_feat = imag_feat.detach()
+        dist = self.actor(imag_feat[:-2])
         samples = dist.sample()
         entropy = - dist.log_prob(samples)
 
         assert target_values.requires_grad
-        actor_loss = - target_values - self._c.entropy_coef * entropy.unsqueeze(-1)
-        discount = self._sequence_discount(actor_loss)
-        actor_loss = torch.mean(discount * actor_loss)
-        values = self.critic(imag_feat) # couple of unnecessary stop_grads: remove them
+        actor_loss = - target_values[1:] - self._c.entropy_coef * entropy.unsqueeze(-1)
+        actor_loss = torch.mean(self._sequence_discount(actor_loss) * actor_loss)
+        values = self.critic(imag_feat[:-1])  # couple of unnecessary stop_grads: remove them
         critic_loss = (values - target_values.detach()).pow(2)
-        critic_loss = torch.mean(discount * critic_loss)
+        critic_loss = torch.mean(self._sequence_discount(critic_loss) * critic_loss)
 
         if self._c.debug:
             self.callback.add_scalar('train/actor_ent', entropy.detach().mean(), self._step)
@@ -159,18 +160,16 @@ class Dreamer(nn.Module):
             return action
 
         # Imagine from the every state.
-        # Avoid terminal state. Not used in continuous control.
+        # Avoid imagining from terminal state. Not a deal in continuous control?
         state = posts.reshape(-1, posts.size(-1))
-        states, actions, log_probs = [], [], []
+        states = []
         for _ in range(self._c.horizon):
             action = policy(state)
             state = self.wm.img_step(action, state)
             states.append(state)
-            actions.append(action)
 
-        # First state comes from buffer, so return should not be optimized ?? [1:]
-        states, actions = map(lambda t: torch.stack(t), (states, actions))
-        return self.wm.get_feat(states), actions
+        states = torch.stack(states)
+        return self.wm.get_feat(states)
 
     def _sequence_discount(self, x):
         discount = self._c.discount ** torch.arange(x.size(0), device=self.device)
